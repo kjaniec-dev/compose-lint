@@ -172,6 +172,230 @@ func TestCheckPrivileged(t *testing.T) {
 	})
 }
 
+func TestCheckCapabilities(t *testing.T) {
+	t.Run("no cap_add → no finding", func(t *testing.T) {
+		f := checkCapabilities("svc", Service{})
+		if len(f) != 0 {
+			t.Error("expected no finding without cap_add")
+		}
+	})
+	t.Run("safe capability → no finding", func(t *testing.T) {
+		f := checkCapabilities("svc", Service{CapAdd: []string{"NET_BIND_SERVICE"}})
+		if len(f) != 0 {
+			t.Errorf("unexpected finding for safe cap: %s", f[0].Message)
+		}
+	})
+	t.Run("SYS_ADMIN → error", func(t *testing.T) {
+		f := checkCapabilities("svc", Service{CapAdd: []string{"SYS_ADMIN"}})
+		if len(f) == 0 || f[0].Severity != SeverityError {
+			t.Error("expected error for SYS_ADMIN capability")
+		}
+	})
+	t.Run("ALL → error", func(t *testing.T) {
+		f := checkCapabilities("svc", Service{CapAdd: []string{"ALL"}})
+		if len(f) == 0 || f[0].Severity != SeverityError {
+			t.Error("expected error for ALL capability")
+		}
+	})
+	t.Run("lowercase dangerous cap → error", func(t *testing.T) {
+		f := checkCapabilities("svc", Service{CapAdd: []string{"net_admin"}})
+		if len(f) == 0 || f[0].Severity != SeverityError {
+			t.Error("expected error for net_admin (lowercase)")
+		}
+	})
+	t.Run("multiple caps mixed → only dangerous flagged", func(t *testing.T) {
+		f := checkCapabilities("svc", Service{CapAdd: []string{"NET_BIND_SERVICE", "SYS_PTRACE", "CHOWN"}})
+		if len(f) != 1 || f[0].Rule != "capabilities" {
+			t.Errorf("expected exactly 1 finding for SYS_PTRACE, got %d", len(f))
+		}
+	})
+}
+
+func TestCheckHostNetwork(t *testing.T) {
+	t.Run("no network_mode → no finding", func(t *testing.T) {
+		f := checkHostNetwork("svc", Service{})
+		if len(f) != 0 {
+			t.Error("unexpected finding without network_mode")
+		}
+	})
+	t.Run("network_mode: bridge → no finding", func(t *testing.T) {
+		f := checkHostNetwork("svc", Service{NetworkMode: "bridge"})
+		if len(f) != 0 {
+			t.Error("unexpected finding for bridge network")
+		}
+	})
+	t.Run("network_mode: host → warn", func(t *testing.T) {
+		f := checkHostNetwork("svc", Service{NetworkMode: "host"})
+		if len(f) == 0 || f[0].Severity != SeverityWarn {
+			t.Error("expected warn for host network mode")
+		}
+	})
+	t.Run("network_mode: HOST (uppercase) → warn", func(t *testing.T) {
+		f := checkHostNetwork("svc", Service{NetworkMode: "HOST"})
+		if len(f) == 0 || f[0].Severity != SeverityWarn {
+			t.Error("expected warn for HOST (uppercase) network mode")
+		}
+	})
+}
+
+func TestCheckNoRootUser(t *testing.T) {
+	t.Run("no user → no finding", func(t *testing.T) {
+		f := checkNoRootUser("svc", Service{})
+		if len(f) != 0 {
+			t.Error("unexpected finding when user is not set")
+		}
+	})
+	t.Run("non-root user → no finding", func(t *testing.T) {
+		for _, u := range []string{"nginx", "1000", "1000:1000", "app"} {
+			f := checkNoRootUser("svc", Service{User: u})
+			if len(f) != 0 {
+				t.Errorf("user=%q: unexpected finding", u)
+			}
+		}
+	})
+	t.Run("user: root → warn", func(t *testing.T) {
+		f := checkNoRootUser("svc", Service{User: "root"})
+		if len(f) == 0 || f[0].Severity != SeverityWarn {
+			t.Error("expected warn for user: root")
+		}
+	})
+	t.Run("user: 0 → warn", func(t *testing.T) {
+		f := checkNoRootUser("svc", Service{User: "0"})
+		if len(f) == 0 || f[0].Severity != SeverityWarn {
+			t.Error("expected warn for user: 0")
+		}
+	})
+	t.Run("user: 0:0 → warn", func(t *testing.T) {
+		f := checkNoRootUser("svc", Service{User: "0:0"})
+		if len(f) == 0 || f[0].Severity != SeverityWarn {
+			t.Error("expected warn for user: 0:0")
+		}
+	})
+	t.Run("user: 0:1000 (root UID, non-root GID) → warn", func(t *testing.T) {
+		f := checkNoRootUser("svc", Service{User: "0:1000"})
+		if len(f) == 0 || f[0].Severity != SeverityWarn {
+			t.Error("expected warn for user: 0:1000")
+		}
+	})
+}
+
+func TestCheckEnvSecrets(t *testing.T) {
+	t.Run("no environment → no finding", func(t *testing.T) {
+		f := checkEnvSecrets("svc", Service{})
+		if len(f) != 0 {
+			t.Error("unexpected finding with no environment")
+		}
+	})
+	t.Run("safe env var → no finding", func(t *testing.T) {
+		f := checkEnvSecrets("svc", Service{Environment: EnvVars{"APP_PORT": "8080", "LOG_LEVEL": "info"}})
+		if len(f) != 0 {
+			t.Errorf("unexpected finding for safe env vars: %s", f[0].Message)
+		}
+	})
+	t.Run("hardcoded password → warn", func(t *testing.T) {
+		f := checkEnvSecrets("svc", Service{Environment: EnvVars{"DB_PASSWORD": "s3cret"}})
+		if len(f) == 0 || f[0].Severity != SeverityWarn {
+			t.Error("expected warn for hardcoded DB_PASSWORD")
+		}
+	})
+	t.Run("env var reference → no finding", func(t *testing.T) {
+		f := checkEnvSecrets("svc", Service{Environment: EnvVars{"DB_PASSWORD": "${DB_PASSWORD}"}})
+		if len(f) != 0 {
+			t.Error("unexpected finding for env var reference ${DB_PASSWORD}")
+		}
+	})
+	t.Run("empty value → no finding", func(t *testing.T) {
+		f := checkEnvSecrets("svc", Service{Environment: EnvVars{"DB_PASSWORD": ""}})
+		if len(f) != 0 {
+			t.Error("unexpected finding for empty password value")
+		}
+	})
+	t.Run("API_TOKEN hardcoded → warn", func(t *testing.T) {
+		f := checkEnvSecrets("svc", Service{Environment: EnvVars{"API_TOKEN": "tok_abc123xyz"}})
+		if len(f) == 0 || f[0].Severity != SeverityWarn {
+			t.Error("expected warn for hardcoded API_TOKEN")
+		}
+	})
+	t.Run("multiple secrets → multiple findings", func(t *testing.T) {
+		f := checkEnvSecrets("svc", Service{Environment: EnvVars{
+			"DB_PASSWORD": "hunter2",
+			"API_SECRET":  "abc123",
+			"PORT":        "5432",
+		}})
+		if len(f) != 2 {
+			t.Errorf("expected 2 findings for 2 secret vars, got %d", len(f))
+		}
+	})
+}
+
+func TestCheckReadOnlyRootfs(t *testing.T) {
+	t.Run("read_only not set → info", func(t *testing.T) {
+		f := checkReadOnlyRootfs("svc", Service{})
+		if len(f) == 0 || f[0].Severity != SeverityInfo {
+			t.Error("expected info when read_only not set")
+		}
+	})
+	t.Run("read_only: true → no finding", func(t *testing.T) {
+		f := checkReadOnlyRootfs("svc", Service{ReadOnly: true})
+		if len(f) != 0 {
+			t.Error("unexpected finding when read_only: true")
+		}
+	})
+}
+
+func TestRun_DependsOnMissing(t *testing.T) {
+	yaml := []byte(`
+version: "3.8"
+services:
+  api:
+    image: myapp:1.0
+    depends_on:
+      - db
+      - nonexistent
+  db:
+    image: postgres:15
+`)
+	findings, err := Run(yaml)
+	if err != nil {
+		t.Fatalf("unexpected parse error: %v", err)
+	}
+	var found bool
+	for _, f := range findings {
+		if f.Rule == "depends-on-missing" && f.Service == "api" {
+			found = true
+			if f.Severity != SeverityError {
+				t.Errorf("expected error severity for depends-on-missing, got %s", f.Severity)
+			}
+		}
+	}
+	if !found {
+		t.Error("expected depends-on-missing finding for unknown service reference")
+	}
+}
+
+func TestRun_DependsOnMapFormat(t *testing.T) {
+	yaml := []byte(`
+version: "3.8"
+services:
+  api:
+    image: myapp:1.0
+    depends_on:
+      db:
+        condition: service_healthy
+  db:
+    image: postgres:15
+`)
+	findings, err := Run(yaml)
+	if err != nil {
+		t.Fatalf("unexpected parse error: %v", err)
+	}
+	for _, f := range findings {
+		if f.Rule == "depends-on-missing" {
+			t.Errorf("unexpected depends-on-missing for valid service reference: %s", f.Message)
+		}
+	}
+}
+
 // --- integration tests ---
 
 var badYAML = []byte(`

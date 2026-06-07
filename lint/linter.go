@@ -60,6 +60,21 @@ func Run(data []byte) ([]Finding, error) {
 			findings = append(findings, r(name, svc)...)
 		}
 	}
+
+	// Cross-service check: depends_on must reference defined services.
+	for _, name := range names {
+		for _, dep := range cf.Services[name].DependsOn {
+			if _, ok := cf.Services[dep]; !ok {
+				findings = append(findings, Finding{
+					Service:  name,
+					Severity: SeverityError,
+					Rule:     "depends-on-missing",
+					Message:  fmt.Sprintf("depends_on references unknown service %q", dep),
+				})
+			}
+		}
+	}
+
 	return findings, nil
 }
 

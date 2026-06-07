@@ -1,0 +1,25 @@
+version: "3.8"
+
+services:
+  api:
+    image: myapp:latest       # ERROR: latest tag
+    ports:
+      - "8080:8080"           # WARN: all interfaces
+      - "9090:9090"
+    environment:
+      - DB_HOST=postgres
+
+  db:
+    image: postgres           # ERROR: no tag → latest
+    privileged: true          # ERROR: privileged mode
+    ports:
+      - "0.0.0.0:5432:5432"  # WARN: all interfaces explicit
+    environment:
+      - POSTGRES_PASSWORD=secret
+
+  cache:
+    image: redis
+    ports:
+      - target: 6379
+        published: 6379
+        # WARN: no host_ip → all interfaces

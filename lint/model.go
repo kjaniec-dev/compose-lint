@@ -1,6 +1,10 @@
 package lint
 
-import "gopkg.in/yaml.v3"
+import (
+	"strings"
+
+	"gopkg.in/yaml.v3"
+)
 
 // ComposeFile is the top-level docker-compose document.
 type ComposeFile struct {
@@ -17,6 +21,10 @@ type Service struct {
 	Privileged  bool         `yaml:"privileged"`
 	ReadOnly    bool         `yaml:"read_only"`
 	User        string       `yaml:"user"`
+	NetworkMode string       `yaml:"network_mode"`
+	CapAdd      []string     `yaml:"cap_add"`
+	Environment EnvVars      `yaml:"environment"`
+	DependsOn   DependsOn    `yaml:"depends_on"`
 	SecurityOpt []string     `yaml:"security_opt"`
 	HealthCheck *HealthCheck `yaml:"healthcheck"`
 	Deploy      *Deploy      `yaml:"deploy"`
@@ -64,4 +72,45 @@ type Resources struct {
 type ResourceSpec struct {
 	CPUs   string `yaml:"cpus"`
 	Memory string `yaml:"memory"`
+}
+
+// EnvVars holds environment variables supporting both map and list YAML formats.
+type EnvVars map[string]string
+
+func (e *EnvVars) UnmarshalYAML(node *yaml.Node) error {
+	*e = make(EnvVars)
+	switch node.Kind {
+	case yaml.MappingNode:
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			(*e)[node.Content[i].Value] = node.Content[i+1].Value
+		}
+	case yaml.SequenceNode:
+		for _, item := range node.Content {
+			kv := strings.SplitN(item.Value, "=", 2)
+			if len(kv) == 2 {
+				(*e)[kv[0]] = kv[1]
+			} else {
+				(*e)[kv[0]] = ""
+			}
+		}
+	}
+	return nil
+}
+
+// DependsOn is a list of service names this service depends on.
+// Supports both list format (- svc) and map format (svc: {condition: ...}).
+type DependsOn []string
+
+func (d *DependsOn) UnmarshalYAML(node *yaml.Node) error {
+	switch node.Kind {
+	case yaml.SequenceNode:
+		for _, item := range node.Content {
+			*d = append(*d, item.Value)
+		}
+	case yaml.MappingNode:
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			*d = append(*d, node.Content[i].Value)
+		}
+	}
+	return nil
 }
